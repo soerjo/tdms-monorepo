@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { LedgerService } from '../ledger/ledger.service.js';
 import { StopStatus } from '@prisma/client';
+import { DeliveryStateMachine } from '../../common/state-machine/delivery-state-machine.js';
 import { SubmitPodDto } from './dto/submit-pod.dto.js';
 import { FailDeliveryDto } from './dto/fail-delivery.dto.js';
 import { RtoHandoverDto } from './dto/rto-handover.dto.js';
@@ -31,6 +32,13 @@ export class DeliveryService {
       return stop;
     }
 
+    // State machine invariant: Stop transition validation with Trip context
+    DeliveryStateMachine.validateStopTransition(
+      stop.status,
+      StopStatus.DELIVERED,
+      stop.trip.status,
+    );
+
     // Hitung jarak Geofencing Haversine (Meter)
     const distanceMeters = this.calculateDistance(
       dto.latitude,
@@ -55,6 +63,19 @@ export class DeliveryService {
           podPhotoUrl: dto.podPhotoUrl,
           podSignatureUrl: dto.podSignatureUrl,
           completedAt: new Date(),
+        },
+      });
+
+      // Audit status transition history
+      await tx.deliveryStatusHistory.create({
+        data: {
+          entityType: 'STOP',
+          entityId: stop.id,
+          oldStatus: stop.status,
+          newStatus: StopStatus.DELIVERED,
+          actorId: dto.driverId,
+          reason: 'e-POD verified within geofence',
+          metadata: { distanceMeters, isCod: stop.isCod },
         },
       });
 
@@ -144,6 +165,18 @@ export class DeliveryService {
         },
       });
 
+      // Audit status transition history
+      await tx.deliveryStatusHistory.create({
+        data: {
+          entityType: 'STOP',
+          entityId: stop.id,
+          oldStatus: stop.status,
+          newStatus: updatedStatus,
+          reason: dto.reasonCode,
+          metadata: { attemptNumber: priorFailuresCount + 1, isRtoTriggered },
+        },
+      });
+
       if (isRtoTriggered) {
         await tx.outboxEvent.create({
           data: {
@@ -180,7 +213,6 @@ export class DeliveryService {
       throw new NotFoundException(`Tidak ditemukan order RTO aktif untuk order ${orderId}`);
     }
 
-    // Catat event rekonsiliasi fisik barang di gudang
     await this.prisma.outboxEvent.create({
       data: {
         aggregateType: 'Order',

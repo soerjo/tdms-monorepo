@@ -161,3 +161,29 @@ model OutboxEvent {
   @@index([status, availableAt], map: "idx_outbox_pending")
   @@map("outbox_events")
 }
+
+model DeliveryStatusHistory {
+  id          String   @id @default(uuid()) @db.Uuid
+  entityType  String   @map("entity_type") @db.VarChar(32) // TRIP or STOP
+  entityId    String   @map("entity_id") @db.Uuid
+  oldStatus   String   @map("old_status") @db.VarChar(32)
+  newStatus   String   @map("new_status") @db.VarChar(32)
+  actorId     String?  @map("actor_id") @db.Uuid
+  reason      String?  @db.Text
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([entityType, entityId], map: "idx_status_history_entity")
+  @@map("delivery_status_history")
+}
+
+model IdempotencyRecord {
+  key         String   @id @db.VarChar(64)
+  requestHash String   @map("request_hash") @db.VarChar(64)
+  status      String   @default("PROCESSING") @db.VarChar(16) // PROCESSING, COMPLETED, FAILED
+  responseBody Json?   @map("response_body")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  expiresAt   DateTime @map("expires_at") @db.Timestamptz(6)
+
+  @@map("idempotency_records")
+}

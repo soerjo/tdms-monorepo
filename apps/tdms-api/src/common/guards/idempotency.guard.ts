@@ -6,10 +6,18 @@ import {
   Injectable,
 } from '@nestjs/common';
 import { Request } from 'express';
+import * as crypto from 'crypto';
+
+export interface IdempotencyEntry {
+  key: string;
+  requestHash: string;
+  status: 'PROCESSING' | 'COMPLETED' | 'FAILED';
+  createdAt: number;
+}
 
 @Injectable()
 export class IdempotencyGuard implements CanActivate {
-  private static readonly processedKeys = new Set<string>();
+  private static readonly records = new Map<string, IdempotencyEntry>();
 
   canActivate(context: ExecutionContext): boolean {
     const request = context.switchToHttp().getRequest<Request>();
@@ -25,13 +33,53 @@ export class IdempotencyGuard implements CanActivate {
       throw new BadRequestException('Idempotency-Key harus berformat UUIDv4');
     }
 
-    if (IdempotencyGuard.processedKeys.has(idempotencyKey)) {
-      throw new ConflictException(
-        `Request dengan Idempotency-Key ${idempotencyKey} sedang atau sudah diproses`,
-      );
+    const bodyStr = JSON.stringify(request.body || {});
+    const requestHash = crypto.createHash('sha256').update(bodyStr).digest('hex');
+
+    const existing = IdempotencyGuard.records.get(idempotencyKey);
+    if (existing) {
+      // Cek apakah payload berubah (Payload Drift Detection)
+      if (existing.requestHash !== requestHash) {
+        throw new BadRequestException(
+          `Idempotency violation: Kunci '${idempotencyKey}' sudah digunakan untuk payload yang berbeda`,
+        );
+      }
+
+      if (existing.status === 'PROCESSING') {
+        throw new ConflictException(
+          `Concurrent execution: Request dengan Idempotency-Key '${idempotencyKey}' sedang diproses`,
+        );
+      }
+
+      // Replay allowed
+      return true;
     }
 
-    IdempotencyGuard.processedKeys.add(idempotencyKey);
+    IdempotencyGuard.records.set(idempotencyKey, {
+      key: idempotencyKey,
+      requestHash,
+      status: 'PROCESSING',
+      createdAt: Date.now(),
+    });
+
     return true;
+  }
+
+  static markCompleted(idempotencyKey: string): void {
+    const record = IdempotencyGuard.records.get(idempotencyKey);
+    if (record) {
+      record.status = 'COMPLETED';
+    }
+  }
+
+  static markFailed(idempotencyKey: string): void {
+    const record = IdempotencyGuard.records.get(idempotencyKey);
+    if (record) {
+      record.status = 'FAILED';
+    }
+  }
+
+  static clear(): void {
+    IdempotencyGuard.records.clear();
   }
 }

@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { LedgerService } from '../ledger/ledger.service.js';
 import { TripStatus } from '@prisma/client';
+import { DeliveryStateMachine } from '../../common/state-machine/delivery-state-machine.js';
 
 @Injectable()
 export class DispatchService {
@@ -31,6 +32,9 @@ export class DispatchService {
         throw new NotFoundException(`Trip dengan ID ${tripId} tidak ditemukan`);
       }
 
+      // Validasi state machine trip
+      DeliveryStateMachine.validateTripTransition(trip.status, TripStatus.ASSIGNED);
+
       // Hitung total COD dalam trip ini
       const totalTripCod = trip.stops.reduce((sum, stop) => {
         return stop.isCod ? sum + Number(stop.codAmount) : sum;
@@ -46,15 +50,66 @@ export class DispatchService {
         );
       }
 
-      return await this.prisma.deliveryTrip.update({
-        where: { id: tripId },
-        data: {
-          driverId,
-          status: TripStatus.ASSIGNED,
-        },
+      return await this.prisma.$transaction(async (tx) => {
+        const updatedTrip = await tx.deliveryTrip.update({
+          where: { id: tripId },
+          data: {
+            driverId,
+            status: TripStatus.ASSIGNED,
+          },
+        });
+
+        await tx.deliveryStatusHistory.create({
+          data: {
+            entityType: 'TRIP',
+            entityId: trip.id,
+            oldStatus: trip.status,
+            newStatus: TripStatus.ASSIGNED,
+            actorId: driverId,
+            reason: 'Driver assignment confirmed with COD check',
+          },
+        });
+
+        return updatedTrip;
       });
     } finally {
       DispatchService.activeLocks.delete(lockKey);
     }
+  }
+
+  async startTrip(tripId: string, driverId: string) {
+    const trip = await this.prisma.deliveryTrip.findUnique({
+      where: { id: tripId },
+    });
+
+    if (!trip) {
+      throw new NotFoundException(`Trip ${tripId} tidak ditemukan`);
+    }
+
+    if (trip.driverId !== driverId) {
+      throw new BadRequestException('Driver tidak terotorisasi untuk memulai trip ini');
+    }
+
+    DeliveryStateMachine.validateTripTransition(trip.status, TripStatus.IN_TRANSIT);
+
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.deliveryTrip.update({
+        where: { id: tripId },
+        data: { status: TripStatus.IN_TRANSIT },
+      });
+
+      await tx.deliveryStatusHistory.create({
+        data: {
+          entityType: 'TRIP',
+          entityId: trip.id,
+          oldStatus: trip.status,
+          newStatus: TripStatus.IN_TRANSIT,
+          actorId: driverId,
+          reason: 'Courier departed from hub',
+        },
+      });
+
+      return updated;
+    });
   }
 }

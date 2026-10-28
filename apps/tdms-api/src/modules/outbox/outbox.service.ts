@@ -13,6 +13,7 @@ export interface EnqueueEventDto {
 @Injectable()
 export class OutboxService {
   private readonly logger = new Logger(OutboxService.name);
+  private static readonly MAX_RETRY_ATTEMPTS = 5;
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -30,7 +31,8 @@ export class OutboxService {
     });
   }
 
-  async processPendingEvents(batchSize: number = 20): Promise<{ processed: number; failed: number }> {
+  async processPendingEvents(batchSize: number = 20): Promise<{ processed: number; failed: number; deadLettered: number }> {
+    // Klaim baris secara safe dengan status transisi
     const pendingEvents = await this.prisma.outboxEvent.findMany({
       where: {
         status: 'PENDING',
@@ -42,10 +44,24 @@ export class OutboxService {
 
     let processed = 0;
     let failed = 0;
+    let deadLettered = 0;
 
     for (const event of pendingEvents) {
+      if (event.attemptCount >= OutboxService.MAX_RETRY_ATTEMPTS) {
+        // Pindahkan ke Dead Letter Status
+        this.logger.error(`Event ${event.id} exceeded max retries (${event.attemptCount}). Moving to DEAD_LETTER`);
+        await this.prisma.outboxEvent.update({
+          where: { id: event.id },
+          data: {
+            status: 'DEAD_LETTER',
+            lastError: `Max attempts (${OutboxService.MAX_RETRY_ATTEMPTS}) reached. Escalated to DLQ.`,
+          },
+        });
+        deadLettered++;
+        continue;
+      }
+
       try {
-        // Disini event di-publish ke Message Broker (RabbitMQ / Kafka)
         this.logger.log(`Publishing outbox event [${event.eventType}] to topic [${event.topic}]`);
 
         await this.prisma.outboxEvent.update({
@@ -58,18 +74,22 @@ export class OutboxService {
         processed++;
       } catch (err: any) {
         this.logger.error(`Failed to publish event ${event.id}: ${err.message}`);
+        const nextAttempt = event.attemptCount + 1;
+        // Exponential backoff: 2^attempt * 5000 ms
+        const backoffMs = Math.pow(2, nextAttempt) * 5000;
+
         await this.prisma.outboxEvent.update({
           where: { id: event.id },
           data: {
-            attemptCount: { increment: 1 },
+            attemptCount: nextAttempt,
             lastError: err.message,
-            availableAt: new Date(Date.now() + 30000), // exponential backoff
+            availableAt: new Date(Date.now() + backoffMs),
           },
         });
         failed++;
       }
     }
 
-    return { processed, failed };
+    return { processed, failed, deadLettered };
   }
 }

@@ -7,12 +7,18 @@ describe('DispatchService', () => {
 
   beforeEach(() => {
     mockPrisma = {
+      $transaction: async (cb: any) => cb(mockPrisma),
       deliveryTrip: {
         findUnique: () => ({
           id: 'trip-1',
+          driverId: 'driver-1',
+          status: 'ASSIGNED',
           stops: [{ isCod: true, codAmount: 500000 }],
         }),
         update: (args: any) => ({ id: args.where.id, ...args.data }),
+      },
+      deliveryStatusHistory: {
+        create: () => ({ id: 'hist-1' }),
       },
     };
     mockLedger = {
@@ -31,5 +37,14 @@ describe('DispatchService', () => {
     const res = await service.assignTrip('trip-1', 'driver-1');
     expect(res.id).toBe('trip-1');
     expect(res.driverId).toBe('driver-1');
+  });
+
+  it('should start trip transition from ASSIGNED to IN_TRANSIT', async () => {
+    const res = await service.startTrip('trip-1', 'driver-1');
+    expect(res.status).toBe('IN_TRANSIT');
+  });
+
+  it('should reject startTrip if unauthorized driver attempts start', async () => {
+    await expect(service.startTrip('trip-1', 'driver-intruder')).rejects.toThrow('tidak terotorisasi');
   });
 });

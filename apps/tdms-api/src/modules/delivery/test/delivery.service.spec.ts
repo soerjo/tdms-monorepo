@@ -17,13 +17,20 @@ describe('DeliveryService', () => {
           longitude: 106.8456,
           isCod: true,
           codAmount: 150000,
-          status: 'PENDING',
+          status: 'ARRIVED',
+          trip: {
+            id: 'trip-1',
+            status: 'IN_TRANSIT',
+          },
         }),
         findMany: () => [
           { id: 'stop-rto-1', orderId: 'ORD-RTO', status: 'RTO' },
         ],
         update: (args: any) => ({ id: args.where.id, ...args.data }),
-        count: () => 1, // 1 prior failure -> next will trigger RTO
+        count: () => 1,
+      },
+      deliveryStatusHistory: {
+        create: () => ({ id: 'history-1' }),
       },
       outboxEvent: {
         create: () => ({ id: 'outbox-1' }),
