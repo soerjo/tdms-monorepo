@@ -1,0 +1,27 @@
+{
+  "name": "tdms-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "bun@1.2.4",
+  "description": "Transportation & Delivery Management Service (TDMS) Monorepo - NestJS 11 + OSRM + VROOM + PostGIS + Double-Entry Ledger",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "format": "prettier --write \"{apps,packages}/**/*.{ts,js,json,md}\"",
+    "format:check": "prettier --check \"{apps,packages}/**/*.{ts,js,json,md}\"",
+    "prisma:generate": "turbo run prisma:generate",
+    "docker:up": "docker compose -f docker/docker-compose.yml up -d",
+    "docker:down": "docker compose -f docker/docker-compose.yml down"
+  },
+  "devDependencies": {
+    "prettier": "^3.5.1",
+    "turbo": "^2.11.10",
+    "typescript": "^5.7.3"
+  }
+}

@@ -1,0 +1,57 @@
+services:
+  postgres_tdms:
+    image: postgis/postgis:16-3.4
+    container_name: tdms_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: tdms_user
+      POSTGRES_PASSWORD: tdms_password
+      POSTGRES_DB: tdms_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - tdms_pg_data:/var/lib/postgresql/data
+    networks:
+      - tdms_net
+
+  redis_tdms:
+    image: redis:7-alpine
+    container_name: tdms_redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - tdms_redis_data:/data
+    networks:
+      - tdms_net
+
+  osrm_motorcycle:
+    image: ghcr.io/project-osrm/osrm-backend:v5.27.1
+    container_name: tdms_osrm_motorcycle
+    restart: always
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./osrm/data:/data:ro
+    command: osrm-routed --algorithm mld /data/indonesia-latest.osrm
+    networks:
+      - tdms_net
+
+  vroom_solver:
+    image: vroomvrp/vroom-docker:v1.14.0
+    container_name: tdms_vroom
+    restart: always
+    ports:
+      - "3001:3000"
+    environment:
+      - VROOM_ROUTER=osrm
+    networks:
+      - tdms_net
+
+volumes:
+  tdms_pg_data:
+  tdms_redis_data:
+
+networks:
+  tdms_net:
+    driver: bridge
