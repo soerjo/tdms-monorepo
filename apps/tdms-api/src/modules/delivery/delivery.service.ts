@@ -2,17 +2,9 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { LedgerService } from '../ledger/ledger.service.js';
 import { StopStatus } from '@prisma/client';
-
-export interface SubmitPodDto {
-  stopId: string;
-  driverId: string;
-  latitude: number;
-  longitude: number;
-  podPhotoUrl: string;
-  podSignatureUrl?: string;
-  isMockGps?: boolean;
-  idempotencyKey: string;
-}
+import { SubmitPodDto } from './dto/submit-pod.dto.js';
+import { FailDeliveryDto } from './dto/fail-delivery.dto.js';
+import { RtoHandoverDto } from './dto/rto-handover.dto.js';
 
 @Injectable()
 export class DeliveryService {
@@ -114,6 +106,102 @@ export class DeliveryService {
 
       return updatedStop;
     });
+  }
+
+  async failDelivery(stopId: string, dto: FailDeliveryDto) {
+    const stop = await this.prisma.deliveryStop.findUnique({
+      where: { id: stopId },
+    });
+
+    if (!stop) {
+      throw new NotFoundException(`Stop dengan ID ${stopId} tidak ditemukan`);
+    }
+
+    if (stop.status === StopStatus.DELIVERED) {
+      throw new BadRequestException('Order sudah berhasil diantar (DELIVERED), tidak dapat digagalkan');
+    }
+
+    // Ambil histori kegagalan untuk order ini (maksimal 2x attempt)
+    const priorFailuresCount = await this.prisma.deliveryStop.count({
+      where: {
+        orderId: stop.orderId,
+        status: { in: [StopStatus.FAILED, StopStatus.RTO] },
+      },
+    });
+
+    const isRtoTriggered = priorFailuresCount >= 1; // Percobaan kedua gagal -> Auto RTO
+
+    return this.prisma.$transaction(async (tx) => {
+      const updatedStatus = isRtoTriggered ? StopStatus.RTO : StopStatus.FAILED;
+
+      const updatedStop = await tx.deliveryStop.update({
+        where: { id: stopId },
+        data: {
+          status: updatedStatus,
+          failureReasonCode: dto.reasonCode,
+          podPhotoUrl: dto.evidencePhotoUrl,
+          completedAt: new Date(),
+        },
+      });
+
+      if (isRtoTriggered) {
+        await tx.outboxEvent.create({
+          data: {
+            aggregateType: 'DeliveryStop',
+            aggregateId: stop.id,
+            eventType: 'DeliveryRTOTriggered',
+            topic: 'tdms.delivery.rto_triggered',
+            payload: {
+              stopId: stop.id,
+              orderId: stop.orderId,
+              tripId: stop.tripId,
+              reasonCode: dto.reasonCode,
+              attemptNumber: priorFailuresCount + 1,
+              status: 'RTO_IN_TRANSIT',
+            },
+          },
+        });
+      }
+
+      return {
+        stop: updatedStop,
+        rtoTriggered: isRtoTriggered,
+        attemptNumber: priorFailuresCount + 1,
+      };
+    });
+  }
+
+  async handoverRto(orderId: string, dto: RtoHandoverDto) {
+    const rtoStops = await this.prisma.deliveryStop.findMany({
+      where: { orderId, status: StopStatus.RTO },
+    });
+
+    if (!rtoStops || rtoStops.length === 0) {
+      throw new NotFoundException(`Tidak ditemukan order RTO aktif untuk order ${orderId}`);
+    }
+
+    // Catat event rekonsiliasi fisik barang di gudang
+    await this.prisma.outboxEvent.create({
+      data: {
+        aggregateType: 'Order',
+        aggregateId: orderId,
+        eventType: 'RTOHandoverCompleted',
+        topic: 'tdms.rto.handover_completed',
+        payload: {
+          orderId,
+          hubId: dto.hubId,
+          receivedBy: dto.receivedBy,
+          handoverAt: new Date().toISOString(),
+        },
+      },
+    });
+
+    return {
+      success: true,
+      orderId,
+      hubId: dto.hubId,
+      message: 'Rekonsiliasi fisik barang RTO di Hub gudang asal berhasil diselesaikan',
+    };
   }
 
   private calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {

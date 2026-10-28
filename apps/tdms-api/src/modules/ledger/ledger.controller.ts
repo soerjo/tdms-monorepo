@@ -2,6 +2,7 @@ import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
 import { ApiHeader, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { LedgerService } from './ledger.service.js';
 import { PostJournalDto } from './dto/post-journal.dto.js';
+import { EodSettlementDto, IncidentalExpenseDto } from './dto/eod-settlement.dto.js';
 import { IdempotencyGuard } from '../../common/guards/idempotency.guard.js';
 
 @ApiTags('Ledger')
@@ -27,5 +28,21 @@ export class LedgerController {
       limit: 2000000,
       isLimitBreached: balance > 2000000,
     };
+  }
+
+  @Post('settlement/eod')
+  @UseGuards(IdempotencyGuard)
+  @ApiHeader({ name: 'Idempotency-Key', description: 'UUIDv4 string' })
+  @ApiOperation({ summary: 'End-of-day driver cash settlement with cashier physical validation' })
+  async settleEod(@Body() dto: EodSettlementDto) {
+    return this.ledgerService.settleDriverCash(dto);
+  }
+
+  @Post('expenses/incidental')
+  @UseGuards(IdempotencyGuard)
+  @ApiHeader({ name: 'Idempotency-Key', description: 'UUIDv4 string' })
+  @ApiOperation({ summary: 'Record incidental toll/parking expense claim' })
+  async claimExpense(@Body() dto: IncidentalExpenseDto) {
+    return this.ledgerService.claimIncidentalExpense(dto);
   }
 }

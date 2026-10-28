@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { JournalDirection } from '@prisma/client';
+import { EodSettlementDto, IncidentalExpenseDto } from './dto/eod-settlement.dto.js';
 
 export interface PostJournalDto {
   transactionRefId: string;
@@ -113,5 +114,88 @@ export class LedgerService {
       const amount = Number(line.amount);
       return line.direction === 'DEBIT' ? total + amount : total - amount;
     }, 0);
+  }
+
+  async settleDriverCash(dto: EodSettlementDto) {
+    const currentCashInHand = await this.getDriverCashInHand(dto.driverId);
+
+    if (Math.abs(currentCashInHand - dto.physicalCashReceived) > 0.001) {
+      throw new BadRequestException(
+        `Discrepancy detected! Uang fisik kasir (Rp${dto.physicalCashReceived}) tidak sesuai dengan saldo pembukuan sistem kurir (Rp${currentCashInHand})`,
+      );
+    }
+
+    if (currentCashInHand === 0) {
+      return {
+        success: true,
+        message: 'Driver saldo kas nol, tidak ada setoran kas yang perlu diselesaikan',
+        balance: 0,
+      };
+    }
+
+    // Jurnal Handover Kas:
+    // Debit 102-CASH-HUB (Kas Hub bertambah)
+    // Credit 101-CASH-DRIVER (Piutang kas kurir berkurang ke nol)
+    const journal = await this.postJournalEntry({
+      transactionRefId: `SETTLE-${dto.driverId}-${Date.now()}`,
+      entryType: 'CASH_HANDOVER',
+      description: `Settlement Kas Akhir Hari Driver ${dto.driverId} divalidasi oleh ${dto.cashierId}`,
+      idempotencyKey: dto.idempotencyKey,
+      lines: [
+        {
+          accountCode: '102-CASH-HUB',
+          amount: dto.physicalCashReceived,
+          direction: 'DEBIT',
+          driverId: dto.driverId,
+        },
+        {
+          accountCode: '101-CASH-DRIVER',
+          amount: dto.physicalCashReceived,
+          direction: 'CREDIT',
+          driverId: dto.driverId,
+        },
+      ],
+    });
+
+    return {
+      success: true,
+      journalId: journal.id,
+      driverId: dto.driverId,
+      settledAmount: dto.physicalCashReceived,
+      remainingCashInHand: 0,
+    };
+  }
+
+  async claimIncidentalExpense(dto: IncidentalExpenseDto) {
+    // Jurnal Biaya Operasional / Tol / Parkir:
+    // Debit 501-TOLL-EXPENSE (Beban Operasional Bertambah)
+    // Credit 202-DRIVER-REIMBURSEMENT (Kewajiban Reimbursement ke Kurir)
+    const journal = await this.postJournalEntry({
+      transactionRefId: `EXPENSE-${dto.tripCode}-${Date.now()}`,
+      entryType: 'TOLL_REIMBURSEMENT',
+      description: `Klaim Operasional: ${dto.description} (Trip: ${dto.tripCode})`,
+      idempotencyKey: dto.idempotencyKey,
+      lines: [
+        {
+          accountCode: '501-TOLL-EXPENSE',
+          amount: dto.amount,
+          direction: 'DEBIT',
+          driverId: dto.driverId,
+        },
+        {
+          accountCode: '202-DRIVER-REIMBURSEMENT',
+          amount: dto.amount,
+          direction: 'CREDIT',
+          driverId: dto.driverId,
+        },
+      ],
+    });
+
+    return {
+      success: true,
+      journalId: journal.id,
+      claimedAmount: dto.amount,
+      receiptPhotoUrl: dto.receiptPhotoUrl,
+    };
   }
 }
