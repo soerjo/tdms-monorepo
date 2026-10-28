@@ -6,7 +6,7 @@ export interface GeocodeResult {
   latitude: number;
   longitude: number;
   formattedAddress: string;
-  source: 'PHOTON' | 'MOCK_GEOCODER';
+  source: 'LOCAL_PHOTON' | 'PUBLIC_PHOTON' | 'MOCK_GEOCODER';
 }
 
 export interface SnapResult {
@@ -20,19 +20,22 @@ export interface SnapResult {
 @Injectable()
 export class GeocodingService {
   private readonly logger = new Logger(GeocodingService.name);
+  private readonly photonUrl: string;
   private readonly osrmUrl: string;
 
   constructor(private readonly configService: ConfigService) {
+    this.photonUrl = this.configService.get<string>('PHOTON_URL', 'http://100.92.245.124:2322');
     this.osrmUrl = this.configService.get<string>('OSRM_URL', 'http://localhost:5000');
   }
 
   async forwardGeocode(dto: ForwardGeocodeDto): Promise<GeocodeResult> {
+    // 1. Coba panggil Geocoder Lokal Photon terlebih dahulu (SLA cepat)
     try {
-      const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(dto.rawAddress)}&limit=1`;
+      const localUrl = `${this.photonUrl}/api/?q=${encodeURIComponent(dto.rawAddress)}&limit=1`;
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 1000);
+      const timeoutId = setTimeout(() => controller.abort(), 800);
 
-      const response = await fetch(url, { signal: controller.signal });
+      const response = await fetch(localUrl, { signal: controller.signal });
       clearTimeout(timeoutId);
 
       if (response.ok) {
@@ -43,15 +46,40 @@ export class GeocodingService {
             longitude: first.geometry.coordinates[0],
             latitude: first.geometry.coordinates[1],
             formattedAddress: first.properties.name || dto.rawAddress,
-            source: 'PHOTON',
+            source: 'LOCAL_PHOTON',
           };
         }
       }
-    } catch (err: any) {
-      this.logger.warn(`Photon geocoding failed: ${err.message}. Using deterministic fallback.`);
+    } catch {
+      this.logger.debug(`Local Photon geocoder unavailable. Trying public fallback.`);
     }
 
-    // Deterministic fallback for test & resilience
+    // 2. Fallback ke Public Photon Komoot API
+    try {
+      const publicUrl = `https://photon.komoot.io/api/?q=${encodeURIComponent(dto.rawAddress)}&limit=1`;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 1200);
+
+      const response = await fetch(publicUrl, { signal: controller.signal });
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data.features && data.features.length > 0) {
+          const first = data.features[0];
+          return {
+            longitude: first.geometry.coordinates[0],
+            latitude: first.geometry.coordinates[1],
+            formattedAddress: first.properties.name || dto.rawAddress,
+            source: 'PUBLIC_PHOTON',
+          };
+        }
+      }
+    } catch {
+      this.logger.warn(`Public photon fallback failed. Using mock geocoder.`);
+    }
+
+    // 3. Deterministic Mock Fallback untuk stabilitas unit test
     return {
       latitude: -6.2088,
       longitude: 106.8456,
