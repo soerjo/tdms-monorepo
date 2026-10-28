@@ -1,0 +1,34 @@
+name: TDMS Monorepo CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Bun Runtime
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install Monorepo Dependencies
+        run: bun install
+
+      - name: Generate Prisma Client
+        run: bun run --cwd apps/tdms-api prisma:generate
+
+      - name: Typecheck TypeScript (Clean Code)
+        run: bun run --cwd apps/tdms-api bunx tsc --noEmit
+
+      - name: Run Test Suite & Coverage
+        run: bun test --cwd apps/tdms-api --coverage
+
+      - name: Build Turbo Packages
+        run: bun run build
