@@ -6,9 +6,11 @@ import { PrismaModule } from './prisma/prisma.module.js';
 import { HealthModule } from './modules/health/health.module.js';
 import { MetricsModule } from './modules/metrics/metrics.module.js';
 import { RoutingModule } from './modules/routing/routing.module.js';
+import { OptimizationModule } from './modules/optimization/optimization.module.js';
 import { LedgerModule } from './modules/ledger/ledger.module.js';
 import { DeliveryModule } from './modules/delivery/delivery.module.js';
 import { DispatchModule } from './modules/dispatch/dispatch.module.js';
+import { TrackingModule } from './modules/tracking/tracking.module.js';
 
 @Module({
   imports: [
@@ -26,6 +28,8 @@ import { DispatchModule } from './modules/dispatch/dispatch.module.js';
     HealthModule,
     MetricsModule,
     RoutingModule,
+    OptimizationModule,
+    TrackingModule,
     LedgerModule,
     DeliveryModule,
     DispatchModule,
